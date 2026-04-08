@@ -46,7 +46,9 @@ jobs:
 
       - name: Generate timestamp
         id: timestamp
-        run: echo "time=$(date +'%Y-%m-%d_%H-%M-%S')" >> $GITHUB_OUTPUT
+        run: |
+          echo "time=$(date +'%Y-%m-%d_%H-%M-%S')" >> $GITHUB_OUTPUT
+          echo "is_first_of_month=$([ "$(date +'%d')" -eq 1 ] && echo 'true' || echo 'false')" >> $GITHUB_OUTPUT
 
       - name: Setup Supabase CLI
         if: env.BACKUP_ENABLED == 'true'
@@ -54,31 +56,40 @@ jobs:
         with:
           version: latest
 
-      - name: Create backup directory
+      - name: Create backup directories
         if: env.BACKUP_ENABLED == 'true'
-        run: mkdir -p prisma/backups/${{ steps.timestamp.outputs.time }}
+        run: mkdir -p prisma/backups/daily prisma/backups/monthly
 
       - name: Backup database
         if: env.BACKUP_ENABLED == 'true'
         run: |
+          mkdir -p /tmp/backup-staging/${{ steps.timestamp.outputs.time }}
+
           # Backup roles
           supabase db dump --db-url "$SUPABASE_DB_URL" \
-            -f prisma/backups/${{ steps.timestamp.outputs.time }}/roles.sql --role-only
+            -f /tmp/backup-staging/${{ steps.timestamp.outputs.time }}/roles.sql --role-only
 
           # Backup schema
           supabase db dump --db-url "$SUPABASE_DB_URL" \
-            -f prisma/backups/${{ steps.timestamp.outputs.time }}/schema.sql
+            -f /tmp/backup-staging/${{ steps.timestamp.outputs.time }}/schema.sql
 
           # Backup data
           supabase db dump --db-url "$SUPABASE_DB_URL" \
-            -f prisma/backups/${{ steps.timestamp.outputs.time }}/data.sql --data-only --use-copy
+            -f /tmp/backup-staging/${{ steps.timestamp.outputs.time }}/data.sql --data-only --use-copy
 
-      - name: Compress backups
+      - name: Compress and store daily backup
         if: env.BACKUP_ENABLED == 'true'
         run: |
-          cd prisma/backups
+          cd /tmp/backup-staging
           tar -czf ${{ steps.timestamp.outputs.time }}.tar.gz ${{ steps.timestamp.outputs.time }}
-          rm -rf ${{ steps.timestamp.outputs.time }}
+          cp ${{ steps.timestamp.outputs.time }}.tar.gz \
+            $GITHUB_WORKSPACE/prisma/backups/daily/${{ steps.timestamp.outputs.time }}.tar.gz
+
+      - name: Store monthly backup
+        if: env.BACKUP_ENABLED == 'true' && steps.timestamp.outputs.is_first_of_month == 'true'
+        run: |
+          cp /tmp/backup-staging/${{ steps.timestamp.outputs.time }}.tar.gz \
+            $GITHUB_WORKSPACE/prisma/backups/monthly/${{ steps.timestamp.outputs.time }}.tar.gz
 
       #Send to S3 bucket - not tested
       #------------------------------
@@ -94,41 +105,52 @@ jobs:
       #   if: env.BACKUP_ENABLED == 'true'
       #   run: |
       #     # Upload the latest backup to S3
-      #     cd prisma/backups
-      #     aws s3 cp ${{ steps.timestamp.outputs.time }}.tar.gz s3://${{ vars.S3_BUCKET_NAME }}/database-backups/${{ steps.timestamp.outputs.time }}.tar.gz
+      #     cd prisma/backups/daily
+      #     aws s3 cp ${{ steps.timestamp.outputs.time }}.tar.gz s3://${{ vars.S3_BUCKET_NAME }}/database-backups/daily/${{ steps.timestamp.outputs.time }}.tar.gz
           
       #     # Optional: Add metadata
       #     aws s3api put-object-tagging --bucket ${{ vars.S3_BUCKET_NAME }} \
-      #       --key database-backups/${{ steps.timestamp.outputs.time }}.tar.gz \
+      #       --key database-backups/daily/${{ steps.timestamp.outputs.time }}.tar.gz \
       #       --tagging 'TagSet=[{Key=backup-type,Value=supabase},{Key=created-by,Value=github-actions}]'
           
-      #     echo "Backup uploaded to S3: s3://${{ vars.S3_BUCKET_NAME }}/database-backups/${{ steps.timestamp.outputs.time }}.tar.gz"   
+      #     echo "Backup uploaded to S3: s3://${{ vars.S3_BUCKET_NAME }}/database-backups/daily/${{ steps.timestamp.outputs.time }}.tar.gz"   
 
       - name: Cleanup old backups
         if: env.BACKUP_ENABLED == 'true'
         run: |
-          cd prisma/backups
+          # Keep the 7 most recent daily backups; tail -n +8 selects from the 8th onward for deletion
+          cd $GITHUB_WORKSPACE/prisma/backups/daily
           if ls *.tar.gz 1> /dev/null 2>&1; then
-            ls -t *.tar.gz | tail -n +6 | xargs -r rm
+            ls -t *.tar.gz | tail -n +8 | xargs -r rm
           else
-            echo "No backups to clean up"
+            echo "No daily backups to clean up"
+          fi
+
+          # Keep the 12 most recent monthly backups; tail -n +13 selects from the 13th onward for deletion
+          cd $GITHUB_WORKSPACE/prisma/backups/monthly
+          if ls *.tar.gz 1> /dev/null 2>&1; then
+            ls -t *.tar.gz | tail -n +13 | xargs -r rm
+          else
+            echo "No monthly backups to clean up"
           fi
 
       - name: Debug Git Status
         if: env.BACKUP_ENABLED == 'true'
         run: |
-          cd prisma/backups
-          ls -la  # List all files
-          git status  # Check git status
-          # Force Git to track the .tar.gz files
-          git add -f *.tar.gz || echo "No files to add"   
-          
+          echo "=== Daily backups ==="
+          ls -la $GITHUB_WORKSPACE/prisma/backups/daily
+          echo "=== Monthly backups ==="
+          ls -la $GITHUB_WORKSPACE/prisma/backups/monthly
+          git -C $GITHUB_WORKSPACE status
+          git -C $GITHUB_WORKSPACE add -f prisma/backups/daily/*.tar.gz || echo "No daily files to add"
+          git -C $GITHUB_WORKSPACE add -f prisma/backups/monthly/*.tar.gz || echo "No monthly files to add"
+
       - name: Commit backups
         if: env.BACKUP_ENABLED == 'true'
         uses: stefanzweifel/git-auto-commit-action@v5.1.0
         with:
           commit_message: "Database Backup - ${{ steps.timestamp.outputs.time }}"
-          file_pattern: 'prisma/backups/*.tar.gz'
+          file_pattern: 'prisma/backups/daily/*.tar.gz prisma/backups/monthly/*.tar.gz'
           commit_options: '--no-verify'
           push_options: '--force'
           status_options: '--untracked-files=no'
