@@ -126,10 +126,10 @@ jobs:
             echo "No daily backups to clean up"
           fi
 
-          # Keep the 12 most recent monthly backups; tail -n +13 selects from the 13th onward for deletion
+          # Keep the 60 most recent monthly backups (5 years); tail -n +61 selects from the 61st onward for deletion
           cd $GITHUB_WORKSPACE/prisma/backups/monthly
           if ls *.tar.gz 1> /dev/null 2>&1; then
-            ls -t *.tar.gz | tail -n +13 | xargs -r rm
+            ls -t *.tar.gz | tail -n +61 | xargs -r rm
           else
             echo "No monthly backups to clean up"
           fi
