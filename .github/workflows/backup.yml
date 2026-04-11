@@ -145,14 +145,26 @@ jobs:
           git -C $GITHUB_WORKSPACE add -f prisma/backups/daily/*.tar.gz || echo "No daily files to add"
           git -C $GITHUB_WORKSPACE add -f prisma/backups/monthly/*.tar.gz || echo "No monthly files to add"
 
-      - name: Commit backups
+      - name: Commit daily backup                                                                                     
         if: env.BACKUP_ENABLED == 'true'
-        uses: stefanzweifel/git-auto-commit-action@v5.1.0
-        with:
+        uses: stefanzweifel/git-auto-commit-action@v5.1.0                                                             
+        with:                                                                                                         
           commit_message: "Database Backup - ${{ steps.timestamp.outputs.time }}"
-          file_pattern: 'prisma/backups/daily/*.tar.gz prisma/backups/monthly/*.tar.gz'
-          commit_options: '--no-verify'
-          push_options: '--force'
+          file_pattern: 'prisma/backups/daily/*.tar.gz'                                                               
+          commit_options: '--no-verify'                         
+          push_options: '--force'                                                                                     
           status_options: '--untracked-files=no'
-          add_options: '-f'
-          skip_checkout: true
+          add_options: '-f'                                                                                           
+          skip_checkout: true                                   
+                                                                                                                      
+      - name: Commit monthly backup
+        if: env.BACKUP_ENABLED == 'true' && steps.timestamp.outputs.is_first_of_month == 'true'                       
+        uses: stefanzweifel/git-auto-commit-action@v5.1.0                                      
+        with:                                            
+          commit_message: "Monthly Database Backup - ${{ steps.timestamp.outputs.time }}"
+          file_pattern: 'prisma/backups/monthly/*.tar.gz'                                
+          commit_options: '--no-verify'                                                                               
+          push_options: '--force'                                                                                     
+          status_options: '--untracked-files=no'                                                                      
+          add_options: '-f'                                                                                           
+          skip_checkout: true                                   
